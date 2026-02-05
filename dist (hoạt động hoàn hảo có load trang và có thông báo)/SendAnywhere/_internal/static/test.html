@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Send Anywhere - Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+
+        .drop-zone {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            background: #f8f9ff;
+        }
+
+        .drop-zone:hover {
+            background: #e8e9ff;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .info {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f0f0f0;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🚀 Send Anywhere - Test Upload</h1>
+
+    <div class="drop-zone" id="dropZone">
+        <div style="font-size: 3em;">📁</div>
+        <div>Click here to select files</div>
+        <div style="color: #999;">or drag and drop</div>
+    </div>
+
+    <input type="file" id="fileInput" multiple>
+
+    <div class="info" id="info" style="display: none;">
+        <div>Files selected: <span id="fileCount">0</span></div>
+        <div>Total size: <span id="totalSize">0 B</span></div>
+        <div id="fileList"></div>
+    </div>
+
+    <script>
+        console.log('Script loaded!');
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const info = document.getElementById('info');
+
+        // Click to browse
+        dropZone.addEventListener('click', () => {
+            console.log('Drop zone clicked!');
+            fileInput.click();
+        });
+
+        // File selected
+        fileInput.addEventListener('change', (e) => {
+            console.log('Files selected:', e.target.files);
+            handleFiles(Array.from(e.target.files));
+        });
+
+        // Drag and drop
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.style.background = '#e8e9ff';
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.style.background = '#f8f9ff';
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.background = '#f8f9ff';
+            console.log('Files dropped:', e.dataTransfer.files);
+            handleFiles(Array.from(e.dataTransfer.files));
+        });
+
+        function handleFiles(files) {
+            console.log('Handling files:', files);
+
+            if (files.length === 0) return;
+
+            const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+
+            document.getElementById('fileCount').textContent = files.length;
+            document.getElementById('totalSize').textContent = formatSize(totalSize);
+
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '<h3>Files:</h3>';
+            files.forEach(file => {
+                fileList.innerHTML += `<div>📄 ${file.name} (${formatSize(file.size)})</div>`;
+            });
+
+            info.style.display = 'block';
+
+            alert(`Selected ${files.length} files!`);
+        }
+
+        function formatSize(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let size = bytes;
+            let unitIndex = 0;
+
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex++;
+            }
+
+            return `${size.toFixed(2)} ${units[unitIndex]}`;
+        }
+    </script>
+</body>
+
+</html>
