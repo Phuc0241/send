@@ -194,7 +194,7 @@ async function startReceive() {
 
         // Setup UI
         const m = info.manifest;
-        $('receiveFileName').textContent = m.folderName;
+        $('receiveFileName').textContent = m.folderName || m.files[0].name;
         $('receiveFileSize').textContent = formatSize(m.totalSize);
         show('receiveFileInfo');
 
@@ -228,7 +228,7 @@ async function handleReceivedData(data) {
                 if (p2pManifest.type === 'folder' || p2pManifest.totalFiles > 1) {
                     const res = await window.pywebview.api.select_folder();
                     if (res.success) p2pDesktopTargetFolder = res.path;
-                    else return alert("Transfer Cancelled: No folder selected");
+                    else return showStatus('receiveStatusMsg', "Transfer Cancelled: No folder selected", 'error');
                 }
             } else {
                 // Web: Init Zip
@@ -270,10 +270,6 @@ async function saveP2PFile() {
 
             if (p2pDesktopTargetFolder) {
                 // Folder mode: Construct path using relative path
-                // Remove root folder name from relative path to avoid duplication if needed
-                // Assuming p2pCurrentFile.path is like "Folder/Sub/File.txt"
-                // And user selected "C:/Desc"
-                // We want "C:/Desc/Folder/Sub/File.txt"
                 savePath = p2pDesktopTargetFolder + '\\' + p2pCurrentFile.path.replace(/\//g, '\\');
             } else {
                 // Single file mode: Ask save
@@ -282,8 +278,10 @@ async function saveP2PFile() {
             }
 
             if (savePath) {
-                await window.pywebview.api.init_file_stream(savePath);
-                await window.pywebview.api.append_chunk(savePath, base64);
+                try {
+                    await window.pywebview.api.init_file_stream(savePath);
+                    await window.pywebview.api.append_chunk(savePath, base64);
+                } catch (e) { console.warn("Save Error", e); }
             }
         };
     }
@@ -316,7 +314,16 @@ async function finishP2PReceive() {
     }
 
     if (window.pywebview && p2pDesktopTargetFolder) {
-        alert(`✅ Folder Download Complete!\nSaved to: ${p2pDesktopTargetFolder}`);
+        // REMOVED ALERT to prevent UI blocking
+        showStatus('receiveStatusMsg', `✅ Saved to: ${p2pDesktopTargetFolder}`, 'success');
+
+        // Add a "Reset" button dynamically
+        const btn = document.createElement('button');
+        btn.textContent = "🔄 Transfer New File";
+        btn.className = "btn";
+        btn.style.marginTop = "10px";
+        btn.onclick = () => location.reload();
+        $('receive-tab').appendChild(btn);
     }
 }
 
