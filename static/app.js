@@ -17,8 +17,9 @@ let peerConnection = null;
 let dataChannel = null;
 let signalingSocket = null;
 let isP2PConnected = false;
-let p2pZip = null; // For Web Folder Receive
-let p2pDesktopTargetFolder = null; // For Desktop Folder Receive
+let p2pZip = null;
+let p2pDesktopTargetFolder = null;
+let resolveSenderAck = null; // Control for Sender Handshake
 
 // UI Helpers
 const $ = (id) => document.getElementById(id);
@@ -56,7 +57,7 @@ function handleFiles(files) {
     const totalSize = files.reduce((sum, f) => sum + f.size, 0);
     $('fileCount').textContent = files.length;
     $('totalSize').textContent = formatSize(totalSize);
-    $('totalChunks').textContent = Math.ceil(totalSize / (1024 * 1024)) || 0; // Prevent NaN
+    $('totalChunks').textContent = Math.ceil(totalSize / (1024 * 1024)) || 0;
     show('fileInfo');
     startSend();
 }
@@ -89,14 +90,13 @@ async function startSend() {
         showStatus('sendStatus', '⏳ Waiting for receiver...', 'info');
         connectSignaling(data.pair_code, 'sender', manifest);
 
-        // Fallback
         setTimeout(() => {
             if (!isP2PConnected) {
                 console.log("P2P Slow/Failed -> Uploading to Relay...");
                 showStatus('sendStatus', '📡 Uploading to Relay (Backup)...', 'info');
                 uploadToRelay(currentTransferId, manifest, selectedFiles);
             }
-        }, 5000);
+        }, 8000); // 8s wait for P2P
 
     } catch (e) { showStatus('sendStatus', `Error: ${e.message}`, 'error'); }
 }
@@ -104,6 +104,7 @@ async function startSend() {
 function createManifest(files) {
     let type = 'file';
     let folderName = 'download';
+    // Better Folder Detection
     if (files.length > 1 || (files[0].webkitRelativePath && files[0].webkitRelativePath.includes('/'))) {
         type = 'folder';
         if (files[0].webkitRelativePath) folderName = files[0].webkitRelativePath.split('/')[0];
@@ -129,11 +130,22 @@ function createManifest(files) {
 // ==========================================
 async function sendFileP2P() {
     if (dataChannel?.readyState !== 'open') return;
-    showStatus('sendStatus', '🚀 Sending P2P...', 'info');
+    showStatus('sendStatus', '🚀 P2P Connected. Sending Manifest...', 'info');
     show('sendProgress');
 
     const manifest = createManifest(selectedFiles);
+    // 1. Send Manifest
     dataChannel.send(JSON.stringify({ type: 'manifest', data: manifest }));
+
+    // 2. WAIT FOR RECEIVER "READY" (Handshake)
+    // This prevents sending files before receiver has selected a folder
+    showStatus('sendStatus', '⏳ Waiting for receiver to accept transfer...', 'info');
+    await new Promise(resolve => {
+        const t = setTimeout(resolve, 60000); // 60s timeout
+        resolveSenderAck = () => { clearTimeout(t); resolve(); };
+    });
+
+    showStatus('sendStatus', '🚀 Sending P2P Data...', 'info');
 
     const CHUNK_SIZE = 16 * 1024;
     let totalSent = 0;
@@ -189,20 +201,18 @@ async function startReceive() {
         const m = info.manifest;
         $('receiveFileName').textContent = m.folderName || m.files[0].name;
         $('receiveFileSize').textContent = formatSize(m.totalSize);
-        // Explicitly set chunks to avoid NaN, though it's informative only
         $('receiveChunks').textContent = m.totalFiles || 1;
         show('receiveFileInfo');
 
         connectSignaling(code, 'receiver', m);
 
-        // Fallback
         setTimeout(() => {
             if (!isP2PConnected) {
                 console.log("P2P Failed -> Using Relay");
                 showStatus('receiveStatusMsg', '⚠️ Using Relay Server...', 'info');
                 downloadFromRelay(info.transfer_id, m);
             }
-        }, 5000);
+        }, 8000);
 
     } catch (e) { showStatus('receiveStatusMsg', e.message, 'error'); }
 }
@@ -210,18 +220,30 @@ async function startReceive() {
 async function handleReceivedData(data) {
     if (typeof data === 'string') {
         const msg = JSON.parse(data);
+
         if (msg.type === 'manifest') {
             p2pManifest = msg.data;
             show('receiveProgress');
+
+            // PREPARE STORAGE (BLOCKS UNTIL DONE)
             if (window.pywebview) {
+                // Desktop: Ask for folder ONCE
                 if (p2pManifest.type === 'folder' || p2pManifest.totalFiles > 1) {
                     const res = await window.pywebview.api.select_folder();
                     if (res.success) p2pDesktopTargetFolder = res.path;
-                    else return showStatus('receiveStatusMsg', "Transfer Cancelled", 'error');
+                    else {
+                        showStatus('receiveStatusMsg', "❌ Transfer Cancelled (No Folder Selected)", 'error');
+                        return; // Don't send ack
+                    }
                 }
             } else {
+                // Web: Init Zip
                 if (p2pManifest.type === 'folder' || p2pManifest.totalFiles > 1) p2pZip = new JSZip();
             }
+
+            // SEND READY SIGNAL TO SENDER
+            dataChannel.send(JSON.stringify({ type: 'ready' }));
+            showStatus('receiveStatusMsg', '🚀 Receiving files...', 'info');
         }
         else if (msg.type === 'file_start') {
             p2pCurrentFile = msg;
@@ -245,17 +267,22 @@ async function saveP2PFile() {
     p2pReceivedChunks = [];
 
     if (window.pywebview) {
+        // Desktop Save
         const reader = new FileReader();
         reader.readAsDataURL(blob);
         reader.onloadend = async () => {
             const base64 = reader.result.split(',')[1];
             let savePath = '';
+
+            // Priority: Use the selected folder if available
             if (p2pDesktopTargetFolder) {
                 savePath = p2pDesktopTargetFolder + '\\' + p2pCurrentFile.path.replace(/\//g, '\\');
             } else {
+                // Fallback to Save As (Single file only)
                 const res = await window.pywebview.api.select_save_file(p2pCurrentFile.name);
                 if (res.success) savePath = res.path;
             }
+
             if (savePath) {
                 try {
                     await window.pywebview.api.init_file_stream(savePath);
@@ -264,6 +291,7 @@ async function saveP2PFile() {
             }
         };
     } else {
+        // Web Save
         if (p2pZip) {
             p2pZip.file(p2pCurrentFile.path, blob);
         } else {
@@ -348,7 +376,30 @@ function setupWebRTC(role, manifest) {
 function setupDataChannel(ch, role, m) {
     ch.binaryType = 'arraybuffer';
     ch.onopen = () => role === 'sender' && sendFileP2P();
-    ch.onmessage = (e) => role === 'receiver' && handleReceivedData(e.data);
+
+    // NEW: Handle Control Messages (Handshake)
+    ch.onmessage = (e) => {
+        // Try parsing control message first
+        try {
+            const text = new TextDecoder().decode(e.data); // Try decode as text first (if sent as Buffer)
+            // Or if sent as string (send(JSON.stringify)):
+            // WebRTC implementation varies: if send(string), e.data is string. 
+            // if send(buffer), e.data is ArrayBuffer.
+
+            // To be safe, we only check string messages for handshake
+            if (typeof e.data === 'string') {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'ready' && role === 'sender') {
+                    console.log("Receiver Ready Ack!");
+                    if (resolveSenderAck) resolveSenderAck();
+                    return;
+                }
+            }
+        } catch (err) { }
+
+        // Standard Receiver Logic
+        if (role === 'receiver') handleReceivedData(e.data);
+    };
 }
 
 function updateProgress(bar, spd, curr, tot, start) {
@@ -367,28 +418,21 @@ function startCountdown(sec) {
     const i = setInterval(() => { if ($('expiryTime')) $('expiryTime').textContent = --t; if (t <= 0) clearInterval(i); }, 1000);
 }
 
+// Minimal Relay Fallback
 async function uploadToRelay(tid, m, files) {
     if (isP2PConnected) return;
     try {
         await fetch(`${RELAY_URL}/transfer/create?transfer_id=${tid}&manifest=${encodeURIComponent(JSON.stringify(m))}`, { method: 'POST' });
-        let i = 0, sent = 0, total = m.totalSize, start = Date.now();
-        show('sendProgress');
-
-        for (const f of files) {
+        let i = 0; for (const f of files) {
             const fd = new FormData(); fd.append('file', f);
-            // Note: In fallback, we upload whole file as one chunk for simplicity, 
-            // but we still update UI. (Real app would chunk this too)
             await fetch(`${RELAY_URL}/transfer/${tid}/chunk/${i++}`, { method: 'POST', body: fd });
-            sent += f.size;
-            updateProgress('sendProgressFill', 'sendSpeed', sent, total, start);
         }
-        showStatus('sendStatus', '✅ Upload Complete (Relay)', 'success');
     } catch (e) { }
 }
 
 async function downloadFromRelay(tid, m) {
     if (isP2PConnected) return;
-    showStatus('receiveStatusMsg', 'Running Relay Download...', 'info');
+    showStatus('receiveStatusMsg', 'From Relay...', 'info');
     if (m.type === 'file') window.open(`${RELAY_URL}/transfer/${tid}/chunk/0`);
-    else alert("Please stick to P2P for folders :)");
+    else alert("Relay Folder Download requires P2P");
 }
