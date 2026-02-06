@@ -21,6 +21,10 @@ let p2pZip = null;
 let p2pDesktopTargetFolder = null;
 let resolveSenderAck = null; // Control for Sender Handshake
 
+// Streaming State
+let p2pCurrentFile = null;
+let p2pStreamQueue = Promise.resolve(); // Queue to serialize async writes
+
 // UI Helpers
 const $ = (id) => document.getElementById(id);
 const show = (id) => $(id)?.classList.add('show');
@@ -96,7 +100,7 @@ async function startSend() {
                 showStatus('sendStatus', '📡 Uploading to Relay (Backup)...', 'info');
                 uploadToRelay(currentTransferId, manifest, selectedFiles);
             }
-        }, 8000); // 8s wait for P2P
+        }, 8000);
 
     } catch (e) { showStatus('sendStatus', `Error: ${e.message}`, 'error'); }
 }
@@ -104,7 +108,6 @@ async function startSend() {
 function createManifest(files) {
     let type = 'file';
     let folderName = 'download';
-    // Better Folder Detection
     if (files.length > 1 || (files[0].webkitRelativePath && files[0].webkitRelativePath.includes('/'))) {
         type = 'folder';
         if (files[0].webkitRelativePath) folderName = files[0].webkitRelativePath.split('/')[0];
@@ -138,7 +141,6 @@ async function sendFileP2P() {
     dataChannel.send(JSON.stringify({ type: 'manifest', data: manifest }));
 
     // 2. WAIT FOR RECEIVER "READY" (Handshake)
-    // This prevents sending files before receiver has selected a folder
     showStatus('sendStatus', '⏳ Waiting for receiver to accept transfer...', 'info');
     await new Promise(resolve => {
         const t = setTimeout(resolve, 60000); // 60s timeout
@@ -162,6 +164,7 @@ async function sendFileP2P() {
 
         let offset = 0;
         while (offset < file.size) {
+            // Buffer control to prevent memory spikes on SENDER side too
             if (dataChannel.bufferedAmount > 8 * 1024 * 1024) {
                 await new Promise(r => setTimeout(r, 10)); continue;
             }
@@ -184,10 +187,8 @@ async function sendFileP2P() {
 // ==========================================
 // RECEIVER
 // ==========================================
-let p2pReceivedChunks = [];
 let p2pCurrentReceived = 0;
 let p2pManifest = null;
-let p2pCurrentFile = null;
 
 async function startReceive() {
     const code = $('pairCodeInput').value.trim();
@@ -227,7 +228,6 @@ async function handleReceivedData(data) {
 
             // PREPARE STORAGE (BLOCKS UNTIL DONE)
             if (window.pywebview) {
-                // Desktop: Ask for folder ONCE
                 if (p2pManifest.type === 'folder' || p2pManifest.totalFiles > 1) {
                     const res = await window.pywebview.api.select_folder();
                     if (res.success) p2pDesktopTargetFolder = res.path;
@@ -237,7 +237,6 @@ async function handleReceivedData(data) {
                     }
                 }
             } else {
-                // Web: Init Zip
                 if (p2pManifest.type === 'folder' || p2pManifest.totalFiles > 1) p2pZip = new JSZip();
             }
 
@@ -247,61 +246,69 @@ async function handleReceivedData(data) {
         }
         else if (msg.type === 'file_start') {
             p2pCurrentFile = msg;
-            p2pReceivedChunks = [];
+
+            // Initialize File Stream Immediately
+            if (window.pywebview) {
+                let savePath = '';
+                if (p2pDesktopTargetFolder) {
+                    savePath = p2pDesktopTargetFolder + '\\' + p2pCurrentFile.path.replace(/\//g, '\\');
+                } else {
+                    // Single file fallback
+                    const res = await window.pywebview.api.select_save_file(p2pCurrentFile.name);
+                    if (res.success) savePath = res.path;
+                }
+
+                if (savePath) {
+                    p2pCurrentFile._savePath = savePath; // Store for chunks
+                    await window.pywebview.api.init_file_stream(savePath);
+                }
+            } else {
+                p2pCurrentFile._chunks = []; // Fallback for Web Zip (RAM is unavoidable here without Streams API)
+            }
         }
         else if (msg.type === 'file_end') {
-            await saveP2PFile();
+            // Web: Add to Zip
+            if (!window.pywebview && p2pZip && p2pCurrentFile._chunks) {
+                const blob = new Blob(p2pCurrentFile._chunks);
+                p2pZip.file(p2pCurrentFile.path, blob);
+                p2pCurrentFile._chunks = []; // Clear RAM
+            } else if (!window.pywebview && !p2pZip && p2pCurrentFile._chunks) {
+                // Single Web File
+                const blob = new Blob(p2pCurrentFile._chunks);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = p2pCurrentFile.name; a.click();
+            }
         }
         else if (msg.type === 'complete') {
             finishP2PReceive();
         }
     } else {
-        p2pReceivedChunks.push(data);
+        // BINARY CHUNK RECEIVED
         p2pCurrentReceived += data.byteLength;
         updateProgress('receiveProgressFill', 'receiveSpeed', p2pCurrentReceived, p2pManifest?.totalSize || 0, Date.now() - 1000);
-    }
-}
 
-async function saveP2PFile() {
-    const blob = new Blob(p2pReceivedChunks);
-    p2pReceivedChunks = [];
+        if (window.pywebview && p2pCurrentFile?._savePath) {
+            // STREAMING WRITE: Use a Queue to ensure order and prevent overwhelming Python
+            const chunkData = data; // ArrayBuffer
+            p2pStreamQueue = p2pStreamQueue.then(async () => {
+                const bytes = new Uint8Array(chunkData);
+                let binary = '';
+                for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+                const base64 = btoa(binary);
+                await window.pywebview.api.append_chunk(p2pCurrentFile._savePath, base64);
+            }).catch(e => console.error("Write Error:", e));
 
-    if (window.pywebview) {
-        // Desktop Save
-        const reader = new FileReader();
-        reader.readAsDataURL(blob);
-        reader.onloadend = async () => {
-            const base64 = reader.result.split(',')[1];
-            let savePath = '';
-
-            // Priority: Use the selected folder if available
-            if (p2pDesktopTargetFolder) {
-                savePath = p2pDesktopTargetFolder + '\\' + p2pCurrentFile.path.replace(/\//g, '\\');
-            } else {
-                // Fallback to Save As (Single file only)
-                const res = await window.pywebview.api.select_save_file(p2pCurrentFile.name);
-                if (res.success) savePath = res.path;
-            }
-
-            if (savePath) {
-                try {
-                    await window.pywebview.api.init_file_stream(savePath);
-                    await window.pywebview.api.append_chunk(savePath, base64);
-                } catch (e) { }
-            }
-        };
-    } else {
-        // Web Save
-        if (p2pZip) {
-            p2pZip.file(p2pCurrentFile.path, blob);
-        } else {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a'); a.href = url; a.download = p2pCurrentFile.name; a.click();
+        } else if (!window.pywebview) {
+            // WEB: Must Buffer (unless FileSystem Access API used, but simpler to use RAM/Blob for now)
+            if (p2pCurrentFile) p2pCurrentFile._chunks.push(data);
         }
     }
 }
 
 async function finishP2PReceive() {
+    // Wait for last writes
+    if (window.pywebview) await p2pStreamQueue;
+
     showStatus('receiveStatusMsg', '✅ All files received!', 'success');
 
     if (!window.pywebview && p2pZip) {
@@ -379,25 +386,21 @@ function setupDataChannel(ch, role, m) {
 
     // NEW: Handle Control Messages (Handshake)
     ch.onmessage = (e) => {
-        // Try parsing control message first
         try {
-            const text = new TextDecoder().decode(e.data); // Try decode as text first (if sent as Buffer)
-            // Or if sent as string (send(JSON.stringify)):
-            // WebRTC implementation varies: if send(string), e.data is string. 
-            // if send(buffer), e.data is ArrayBuffer.
-
-            // To be safe, we only check string messages for handshake
-            if (typeof e.data === 'string') {
-                const msg = JSON.parse(e.data);
-                if (msg.type === 'ready' && role === 'sender') {
-                    console.log("Receiver Ready Ack!");
-                    if (resolveSenderAck) resolveSenderAck();
-                    return;
+            const text = new TextDecoder().decode(e.data);
+            if (typeof e.data === 'string' || text) { // Handle both explicit string and buffer-decoded string
+                const raw = typeof e.data === 'string' ? e.data : text;
+                // Optimization: Only parse if it LOOKS like JSON to avoid parsing 16KB binary chunks
+                if (raw.trim().startsWith('{')) {
+                    const msg = JSON.parse(raw);
+                    if (msg.type === 'ready' && role === 'sender') {
+                        if (resolveSenderAck) resolveSenderAck();
+                        return;
+                    }
                 }
             }
         } catch (err) { }
 
-        // Standard Receiver Logic
         if (role === 'receiver') handleReceivedData(e.data);
     };
 }
