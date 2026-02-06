@@ -256,6 +256,11 @@ async def cleanup_old_transfers():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cleanup: {str(e)}")
 
+@app.head("/")
+async def root_head():
+    """HEAD endpoint for UptimeRobot"""
+    return Response(status_code=200)
+
 @app.get("/")
 async def root():
     """Health check endpoint"""

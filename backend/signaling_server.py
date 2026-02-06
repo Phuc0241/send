@@ -2,7 +2,7 @@
 Signaling Server - WebSocket server for pair code and WebRTC signaling
 Handles client pairing, SDP exchange, and LAN discovery coordination
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Set
 import json
@@ -205,6 +205,11 @@ async def get_stats():
         "total_pair_codes": len(pair_codes),
         "active_connections": sum(len(room) for room in rooms.values())
     }
+
+@app.head("/")
+async def root_head():
+    """HEAD endpoint for UptimeRobot"""
+    return Response(status_code=200)
 
 @app.get("/")
 async def root():
