@@ -13,8 +13,12 @@ RELAY_PORT = 8000
 # Storage Configuration
 UPLOAD_DIR = "uploads"
 TEMP_DIR = "temp"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(TEMP_DIR, exist_ok=True)
+try:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
+except Exception as e:
+    print(f"Warning: Could not create directories: {e}")
+
 
 # Transfer Configuration
 CHUNK_SIZE_LAN = 2 * 1024 * 1024      # 2MB for LAN

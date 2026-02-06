@@ -3,10 +3,9 @@
  * Handles file upload, pair code generation, and download
  */
 
-// Use current hostname instead of localhost for network access
-const CURRENT_HOST = window.location.hostname;
-const SIGNALING_URL = `http://${CURRENT_HOST}:3000`;
-const RELAY_URL = `http://${CURRENT_HOST}:8000`;
+// Render.com deployed servers (use these for production)
+const SIGNALING_URL = 'https://send-anywhere-signaling.onrender.com';
+const RELAY_URL = 'https://send-anywhere-relay.onrender.com';
 
 let selectedFiles = [];
 let currentTransferId = null;
@@ -413,33 +412,60 @@ async function downloadSingleFile(transferId, manifest) {
             }
         }
 
-        // Download file
-        const blob = new Blob(chunks);
-
+        // Check if running in Desktop App (PyWebView)
         if (window.pywebview) {
-            showStatus('receiveStatusMsg', '💾 Saving file...', 'info');
-            const reader = new FileReader();
-            reader.readAsDataURL(blob);
-            reader.onloadend = async function () {
-                try {
-                    const base64data = reader.result;
-                    const result = await window.pywebview.api.save_file(manifest.fileName, base64data);
-                    if (result.success) {
-                        showStatus('receiveStatusMsg', `✅ Saved to: ${result.path}`, 'success');
-                        // Show alert for better visibility
-                        alert(`✅ File saved successfully!\n\nLocation:\n${result.path}`);
-                    } else {
-                        if (result.reason === "User cancelled") {
-                            showStatus('receiveStatusMsg', '⚠️ Save cancelled', 'info');
-                        } else {
-                            throw new Error(result.reason);
-                        }
-                    }
-                } catch (error) {
-                    showStatus('receiveStatusMsg', `❌ Error saving: ${error.message}`, 'error');
+            // Desktop App: Stream file directly to disk
+            showStatus('receiveStatusMsg', '💾 Select save location...', 'info');
+
+            // 1. Select save location
+            const saveResult = await window.pywebview.api.select_save_file(manifest.fileName);
+            if (!saveResult.success) {
+                if (saveResult.reason === "User cancelled") {
+                    showStatus('receiveStatusMsg', '⚠️ Save cancelled', 'info');
+                } else {
+                    throw new Error(saveResult.reason);
                 }
-            };
+                return;
+            }
+
+            const savePath = saveResult.path;
+            showStatus('receiveStatusMsg', '⬇️ Downloading...', 'info');
+
+            // 2. Initialize file stream
+            await window.pywebview.api.init_file_stream(savePath);
+
+            // 3. Download and stream chunks
+            let receivedSize = 0;
+            for (let i = 0; i < totalChunks; i++) {
+                if (downloadAbortController.signal.aborted) throw new Error('Cancelled');
+
+                const chunkData = await downloadChunkWithRetry(manifest.id, i, totalChunks);
+
+                // Convert to Base64
+                const bytes = new Uint8Array(chunkData);
+                let binary = '';
+                const len = bytes.byteLength;
+                for (let j = 0; j < len; j++) {
+                    binary += String.fromCharCode(bytes[j]);
+                }
+                const base64Chunk = btoa(binary);
+
+                // Stream append to disk
+                await window.pywebview.api.append_chunk(savePath, base64Chunk);
+
+                // Update progress
+                receivedSize += chunkData.byteLength;
+                const percent = Math.round((receivedSize / manifest.fileSize) * 100);
+                document.getElementById('receiveProgressBar').style.width = `${percent}%`;
+                document.getElementById('receiveProgressBar').textContent = `${percent}%`;
+            }
+
+            showStatus('receiveStatusMsg', `✅ Saved to: ${savePath}`, 'success');
+            alert(`✅ File saved successfully!\n\nLocation:\n${savePath}`);
+
         } else {
+            // Browser download logic matches original
+            const blob = new Blob(chunks);
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -448,6 +474,7 @@ async function downloadSingleFile(transferId, manifest) {
             URL.revokeObjectURL(url);
             showStatus('receiveStatusMsg', '✅ Download complete!', 'success');
         }
+
     } catch (error) {
         if (error.message === 'Cancelled' || error.name === 'AbortError') {
             showStatus('receiveStatusMsg', '🛑 Download cancelled', 'error');
@@ -548,38 +575,91 @@ async function downloadFolder(transferId, manifest) {
             compression: 'STORE'
         });
 
+        // Check if running in Desktop App (PyWebView)
         if (window.pywebview) {
+            // Desktop App: Stream files directly to disk (NO ZIP in RAM)
+            showStatus('receiveStatusMsg', '📂 Select folder to save files...', 'info');
+
+            // 1. Select folder
+            const folderResult = await window.pywebview.api.select_folder();
+            if (!folderResult.success) {
+                if (folderResult.reason === "User cancelled") {
+                    showStatus('receiveStatusMsg', '⚠️ Download cancelled', 'info');
+                } else {
+                    throw new Error(folderResult.reason);
+                }
+                return;
+            }
+
+            const targetFolder = folderResult.path;
+
+            // 2. Download each file one by one
+            let filesCompleted = 0;
+
+            for (const fileInfo of manifest.files) {
+                // Check cancellation
+                if (downloadAbortController.signal.aborted) {
+                    throw new Error('Cancelled');
+                }
+
+                const fullPath = targetFolder + '\\' + (manifest.folderName ? manifest.folderName + '\\' : '') + fileInfo.name;
+                showStatus('receiveStatusMsg', `⬇️ Downloading: ${fileInfo.name} (${filesCompleted + 1}/${totalFiles})`, 'info');
+
+                // Initialize file stream (create/clear file)
+                await window.pywebview.api.init_file_stream(fullPath);
+
+                // Download file chunks
+                let receivedSize = 0;
+                for (let i = 0; i < fileInfo.chunks; i++) {
+                    if (downloadAbortController.signal.aborted) throw new Error('Cancelled');
+
+                    const chunkId = `${fileInfo.id}_${i}`;
+                    const chunkData = await downloadChunkWithRetry(fileInfo.id, i, totalChunks);
+
+                    // Convert ArrayBuffer to Base64
+                    const bytes = new Uint8Array(chunkData);
+                    let binary = '';
+                    const len = bytes.byteLength;
+                    for (let j = 0; j < len; j++) {
+                        binary += String.fromCharCode(bytes[j]);
+                    }
+                    const base64Chunk = btoa(binary);
+
+                    // Stream chunk to disk immediately
+                    await window.pywebview.api.append_chunk(fullPath, base64Chunk);
+
+                    // Update progress
+                    receivedSize += chunkData.byteLength;
+                    const percent = Math.round((receivedSize / fileInfo.size) * 100);
+
+                    // Update global progress
+                    const globalPercent = Math.round(((filesCompleted / totalFiles) * 100) + (percent / totalFiles));
+                    document.getElementById('receiveProgressBar').style.width = `${globalPercent}%`;
+                    document.getElementById('receiveProgressBar').textContent = `${globalPercent}%`;
+                }
+
+                filesCompleted++;
+            }
+
+            showStatus('receiveStatusMsg', `✅ Saved ${totalFiles} files to: ${targetFolder}`, 'success');
+            alert(`✅ Download Complete!\n\nAll files saved to:\n${targetFolder}`);
+
+        } else {
+            // Browser Mode: Use ZIP (Legacy)
+            // ... (keep existing browser zip logic if needed, or remove if unused)
             showStatus('receiveStatusMsg', '💾 Saving ZIP...', 'info');
             const reader = new FileReader();
             reader.readAsDataURL(zipBlob);
             reader.onloadend = async function () {
-                try {
-                    const base64data = reader.result;
-                    const fileName = manifest.folderName ? `${manifest.folderName}.zip` : 'download.zip';
-                    const result = await window.pywebview.api.save_file(fileName, base64data);
-                    if (result.success) {
-                        showStatus('receiveStatusMsg', `✅ Saved to: ${result.path}`, 'success');
-                        // Show alert for better visibility
-                        alert(`✅ ZIP file saved successfully!\n\nLocation:\n${result.path}`);
-                    } else {
-                        if (result.reason === "User cancelled") {
-                            showStatus('receiveStatusMsg', '⚠️ Save cancelled', 'info');
-                        } else {
-                            throw new Error(result.reason);
-                        }
-                    }
-                } catch (error) {
-                    showStatus('receiveStatusMsg', `❌ Error saving: ${error.message}`, 'error');
-                }
+                // Browser download logic matches original
+                const url = URL.createObjectURL(zipBlob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = manifest.folderName ? `${manifest.folderName}.zip` : 'download.zip';
+                a.click();
+                URL.revokeObjectURL(url);
+                showStatus('receiveStatusMsg', `✅ Downloaded ${totalFiles} files as ZIP!`, 'success');
             };
-        } else {
-            const url = URL.createObjectURL(zipBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = manifest.folderName ? `${manifest.folderName}.zip` : 'download.zip';
-            a.click();
-            URL.revokeObjectURL(url);
-            showStatus('receiveStatusMsg', `✅ Downloaded ${totalFiles} files as ZIP!`, 'success');
         }
     } catch (error) {
         if (error.message === 'Cancelled' || error.name === 'AbortError') {

@@ -136,6 +136,57 @@ def main():
             except Exception as e:
                 return {"success": False, "reason": str(e)}
 
+        def select_save_file(self, filename):
+            """Select a file path for saving a single file"""
+            try:
+                file_types = ('All files (*.*)',)
+                if filename.endswith('.zip'):
+                    file_types = ('ZIP files (*.zip)', 'All files (*.*)')
+                
+                result = window.create_file_dialog(webview.SAVE_DIALOG, save_filename=filename, file_types=file_types)
+                
+                if result:
+                    path = result if isinstance(result, str) else result[0]
+                    return {"success": True, "path": path}
+                return {"success": False, "reason": "User cancelled"}
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
+
+        def select_folder(self):
+            """Select a folder for saving multiple files"""
+            try:
+                result = window.create_file_dialog(webview.FOLDER_DIALOG)
+                if result:
+                    return {"success": True, "path": result[0]}
+                return {"success": False, "reason": "User cancelled"}
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
+
+        def init_file_stream(self, filepath):
+            """Initialize a file for writing (clears content)"""
+            try:
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                with open(filepath, 'wb') as f:
+                    pass # Just create/clear file
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
+
+        def append_chunk(self, filepath, chunk_base64):
+            """Append a chunk of data to the file"""
+            try:
+                # Remove header if present
+                if ',' in chunk_base64:
+                    chunk_base64 = chunk_base64.split(',')[1]
+                
+                data = base64.b64decode(chunk_base64)
+                with open(filepath, 'ab') as f:
+                    f.write(data)
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "reason": str(e)}
+
     print(f"Opening Desktop App...")
     
     api = Api()

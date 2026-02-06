@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Send Anywhere - Production File Transfer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 40px;
+            font-size: 1.1em;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 15px;
+            background: #f0f0f0;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .drop-zone {
+            border: 3px dashed #667eea;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #f8f9ff;
+        }
+
+        .drop-zone:hover,
+        .drop-zone.drag-over {
+            border-color: #764ba2;
+            background: #f0f2ff;
+            transform: scale(1.02);
+        }
+
+        .drop-zone-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+
+        .drop-zone-text {
+            font-size: 1.2em;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .drop-zone-hint {
+            color: #999;
+            font-size: 0.9em;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .pair-code-display {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            margin: 20px 0;
+            display: none;
+        }
+
+        .pair-code-display.show {
+            display: block;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .pair-code {
+            font-size: 3em;
+            font-weight: bold;
+            letter-spacing: 10px;
+            margin: 20px 0;
+            font-family: 'Courier New', monospace;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 1.1em;
+            transition: all 0.3s;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .progress-container {
+            margin-top: 20px;
+            display: none;
+        }
+
+        .progress-container.show {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .mode-indicator {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+
+        .mode-lan {
+            background: #4caf50;
+            color: white;
+        }
+
+        .mode-relay {
+            background: #2196f3;
+            color: white;
+        }
+
+        .file-info {
+            background: #f8f9ff;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .file-info.show {
+            display: block;
+        }
+
+        .file-info-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .file-info-item:last-child {
+            border-bottom: none;
+        }
+
+        .status-message {
+            text-align: center;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .status-message.show {
+            display: block;
+        }
+
+        .status-success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🚀 Send Anywhere</h1>
+        <p class="subtitle">Production File Transfer - 10-100GB at Maximum Speed</p>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('send')">📤 Send</button>
+            <button class="tab" onclick="switchTab('receive')">📥 Receive</button>
+        </div>
+
+        <!-- Send Tab -->
+        <div id="send-tab" class="tab-content active">
+            <div class="drop-zone" id="dropZone">
+                <div class="drop-zone-icon">📁</div>
+                <div class="drop-zone-text">Drag & Drop files or folders here</div>
+                <div class="drop-zone-hint">or click to browse</div>
+            </div>
+            <input type="file" id="fileInput" class="file-input" multiple webkitdirectory>
+
+            <div class="file-info" id="fileInfo">
+                <div class="file-info-item">
+                    <span>📄 Files:</span>
+                    <span id="fileCount">0</span>
+                </div>
+                <div class="file-info-item">
+                    <span>📦 Total Size:</span>
+                    <span id="totalSize">0 B</span>
+                </div>
+                <div class="file-info-item">
+                    <span>🔢 Chunks:</span>
+                    <span id="totalChunks">0</span>
+                </div>
+            </div>
+
+            <div class="pair-code-display" id="pairCodeDisplay">
+                <div>Share this code with receiver:</div>
+                <div class="pair-code" id="pairCode">------</div>
+                <div>⏰ Expires in: <span id="expiryTime">--</span> seconds</div>
+                <div class="mode-indicator mode-relay">📡 Mode: RELAY</div>
+            </div>
+
+            <div class="progress-container" id="sendProgress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="sendProgressFill">0%</div>
+                </div>
+                <div class="progress-info">
+                    <span id="sendStatus">Uploading...</span>
+                    <span id="sendSpeed">0 MB/s</span>
+                </div>
+            </div>
+
+            <div class="status-message" id="sendStatus"></div>
+        </div>
+
+        <!-- Receive Tab -->
+        <div id="receive-tab" class="tab-content">
+            <div class="input-group">
+                <label for="pairCodeInput">Enter Pair Code:</label>
+                <input type="text" id="pairCodeInput" placeholder="123456" maxlength="6">
+            </div>
+
+            <button class="btn" id="receiveBtn" onclick="startReceive()">📥 Start Download</button>
+
+            <div class="file-info" id="receiveFileInfo">
+                <div class="file-info-item">
+                    <span>📄 File:</span>
+                    <span id="receiveFileName">-</span>
+                </div>
+                <div class="file-info-item">
+                    <span>📦 Size:</span>
+                    <span id="receiveFileSize">0 B</span>
+                </div>
+                <div class="file-info-item">
+                    <span>🔢 Chunks:</span>
+                    <span id="receiveChunks">0</span>
+                </div>
+            </div>
+
+            <div class="progress-container" id="receiveProgress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="receiveProgressFill">0%</div>
+                </div>
+                <div class="progress-info">
+                    <span id="receiveStatus">Downloading...</span>
+                    <span id="receiveSpeed">0 MB/s</span>
+                </div>
+            </div>
+
+            <div class="status-message" id="receiveStatusMsg"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>
